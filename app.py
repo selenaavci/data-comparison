@@ -336,7 +336,7 @@ st.markdown(
     """
 )
 
-with st.expander("ℹ️ Nasıl kullanılır?", expanded=False):
+with st.expander("Nasıl kullanılır?", expanded=False):
     st.markdown(
         """
         1. Karşılaştırmak istediğiniz dosyaları yükleyin (Excel, CSV veya XML formatında).
@@ -400,7 +400,7 @@ for file in uploaded_files:
         dfs_with_names.append((unique_name, df))
 
 if len(dfs_with_names) < 2:
-    st.info("💡 Karşılaştırma için en az 2 dosya yüklemeniz gerekir.")
+    st.info("Karşılaştırma için en az 2 dosya yüklemeniz gerekir.")
     st.stop()
 
 st.success(f"✅ {len(dfs_with_names)} dosya başarıyla yüklendi.")
@@ -434,7 +434,7 @@ common_columns = sorted(common_columns)
 
 if not common_columns:
     st.error(
-        "❌ Yüklediğiniz dosyalarda **ortak bir kolon bulunamadı**. "
+        "Yüklediğiniz dosyalarda **ortak bir kolon bulunamadı**. "
         "Satırları eşleştirebilmek için tüm dosyalarda en az bir ortak kolon olması gerekir. "
         "Aşağıda dosyalardaki tüm kolonların listesini görebilirsiniz:"
     )
@@ -453,7 +453,7 @@ key_col = st.selectbox(
 )
 
 start = st.button(
-    "🔍 Karşılaştırmayı başlat",
+    "Karşılaştırmayı başlat",
     type="primary",
     use_container_width=True,
 )
@@ -498,7 +498,7 @@ st.markdown(
 )
 
 tab_rows, tab_cols, tab_excel = st.tabs(
-    ["📋 Tüm Satırlar (Yan Yana)", "📊 Kolon Karşılaştırması", "⬇️ Excel İndir"]
+    ["Tüm Satırlar (Yan Yana)", "Kolon Karşılaştırması", "Excel İndir"]
 )
 
 with tab_rows:
