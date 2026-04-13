@@ -336,7 +336,7 @@ st.markdown(
     """
 )
 
-with st.expander("Nasıl kullanılır?", expanded=False):
+with st.expander("ℹ️ Nasıl kullanılır?", expanded=False):
     st.markdown(
         """
         1. Karşılaştırmak istediğiniz dosyaları yükleyin (Excel, CSV veya XML formatında).
@@ -400,7 +400,7 @@ for file in uploaded_files:
         dfs_with_names.append((unique_name, df))
 
 if len(dfs_with_names) < 2:
-    st.info("Karşılaştırma için en az 2 dosya yüklemeniz gerekir.")
+    st.info("💡 Karşılaştırma için en az 2 dosya yüklemeniz gerekir.")
     st.stop()
 
 st.success(f"✅ {len(dfs_with_names)} dosya başarıyla yüklendi.")
@@ -458,12 +458,24 @@ start = st.button(
     use_container_width=True,
 )
 
-if not start:
+if start:
+    with st.spinner("Dosyalarınız karşılaştırılıyor, lütfen bekleyin..."):
+        col_matrix_df = build_column_matrix(dfs_with_names)
+        values_df, status_df, summary = build_wide_comparison(dfs_with_names, key_col)
+        st.session_state.comparison_result = {
+            "col_matrix_df": col_matrix_df,
+            "values_df": values_df,
+            "status_df": status_df,
+            "summary": summary,
+        }
+
+if "comparison_result" not in st.session_state:
     st.stop()
 
-with st.spinner("Dosyalarınız karşılaştırılıyor, lütfen bekleyin..."):
-    col_matrix_df = build_column_matrix(dfs_with_names)
-    values_df, status_df, summary = build_wide_comparison(dfs_with_names, key_col)
+col_matrix_df = st.session_state.comparison_result["col_matrix_df"]
+values_df = st.session_state.comparison_result["values_df"]
+status_df = st.session_state.comparison_result["status_df"]
+summary = st.session_state.comparison_result["summary"]
 
 st.divider()
 st.header("4. Sonuçlar")
@@ -486,7 +498,7 @@ st.markdown(
 )
 
 tab_rows, tab_cols, tab_excel = st.tabs(
-    ["Tüm Satırlar (Yan Yana)", "Kolon Karşılaştırması", "Excel İndir"]
+    ["📋 Tüm Satırlar (Yan Yana)", "📊 Kolon Karşılaştırması", "⬇️ Excel İndir"]
 )
 
 with tab_rows:
