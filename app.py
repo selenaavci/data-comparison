@@ -369,7 +369,7 @@ def style_metric_table(per_key_df):
     ]
     styler = per_key_df.style
     if signed_cols:
-        styler = styler.applymap(color_pct, subset=signed_cols)
+        styler = styler.map(color_pct, subset=signed_cols)
     fmt = {}
     for c in per_key_df.columns:
         if per_key_df[c].dtype.kind in "fi":
