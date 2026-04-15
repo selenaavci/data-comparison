@@ -195,8 +195,8 @@ def build_wide_comparison(dfs_with_names, key_col):
 
 
 def build_metric_comparison(dfs_with_names, key_col, metric_col, measure="pct"):
-    """Her ID için ilk dosyadaki değer ile diğer dosyalardaki değeri
-    doğrudan karşılaştırır (toplam/ortalama yok). Aynı ID birden fazla
+    """Her anahtar için ilk dosyadaki değer ile diğer dosyalardaki değeri
+    doğrudan karşılaştırır (toplam/ortalama yok). Aynı anahtar birden fazla
     satırda geçiyorsa ilk satır alınır ve uyarı üretilir."""
     file_names = [name for name, _ in dfs_with_names]
 
@@ -292,7 +292,7 @@ def static_change_analysis(per_key_df, summary, top_n=5):
             continue
         sub = per_key_df[[key_col, baseline, name, pct_col]].dropna(subset=[pct_col])
         if sub.empty:
-            lines.append(f"- `{name}`: karşılaştırılabilir ID bulunamadı.")
+            lines.append(f"- `{name}`: karşılaştırılabilir anahtar bulunamadı.")
             continue
         n_up = int((sub[pct_col] > 0).sum())
         n_down = int((sub[pct_col] < 0).sum())
@@ -300,12 +300,12 @@ def static_change_analysis(per_key_df, summary, top_n=5):
         avg_pct = float(sub[pct_col].mean())
         yön = "ortalamada arttı 📈" if avg_pct > 0 else ("ortalamada azaldı 📉" if avg_pct < 0 else "ortalamada değişmedi ➖")
         lines.append(
-            f"- `{name}`: {len(sub)} ID karşılaştırıldı — {n_up} artış, {n_down} azalış, "
+            f"- `{name}`: {len(sub)} anahtar karşılaştırıldı — {n_up} artış, {n_down} azalış, "
             f"{n_flat} değişmedi. Ortalama % değişim: {avg_pct:+.2f}% — {yön}"
         )
 
     lines.append("")
-    lines.append("**ID bazlı öne çıkanlar:**")
+    lines.append("**Anahtar bazlı öne çıkanlar:**")
     for name in file_names[1:]:
         pct_col = f"% değişim ({name} vs {baseline})"
         if pct_col not in per_key_df.columns:
@@ -343,11 +343,11 @@ def style_wide(values_df, status_df):
             for ri in df.index:
                 status = s.at[ri, col]
                 if status == "diff":
-                    styles.at[ri, col] = f"background-color: #{DIFF_COLOR}"
+                    styles.at[ri, col] = f"background-color: #{DIFF_COLOR}; color: #111"
                 elif status == "missing":
-                    styles.at[ri, col] = f"background-color: #{MISSING_COLOR}"
+                    styles.at[ri, col] = f"background-color: #{MISSING_COLOR}; color: #111"
                 elif status == "same" and col == "Durum":
-                    styles.at[ri, col] = f"background-color: #{SAME_COLOR}"
+                    styles.at[ri, col] = f"background-color: #{SAME_COLOR}; color: #111"
         return styles
 
     return v.style.apply(apply_styles, axis=None)
@@ -358,9 +358,9 @@ def style_metric_table(per_key_df):
         if pd.isna(val):
             return ""
         if val > 0:
-            return f"background-color: #{UP_COLOR}"
+            return f"background-color: #{UP_COLOR}; color: #111"
         if val < 0:
-            return f"background-color: #{DOWN_COLOR}"
+            return f"background-color: #{DOWN_COLOR}; color: #111"
         return ""
 
     signed_cols = [
@@ -385,14 +385,14 @@ def style_column_matrix(col_matrix_df):
         for ri in df.index:
             durum = df.at[ri, "Durum"]
             if durum == "Bazı dosyalarda yok":
-                styles.at[ri, "Durum"] = f"background-color: #{MISSING_COLOR}"
+                styles.at[ri, "Durum"] = f"background-color: #{MISSING_COLOR}; color: #111"
             elif durum == "Tüm dosyalarda var":
-                styles.at[ri, "Durum"] = f"background-color: #{SAME_COLOR}"
+                styles.at[ri, "Durum"] = f"background-color: #{SAME_COLOR}; color: #111"
             for col in df.columns:
                 if col in ("Kolon adı", "Durum"):
                     continue
                 if df.at[ri, col] == "✗ Yok":
-                    styles.at[ri, col] = f"background-color: #{MISSING_COLOR}"
+                    styles.at[ri, col] = f"background-color: #{MISSING_COLOR}; color: #111"
         return styles
 
     return col_matrix_df.style.apply(apply_styles, axis=None)
@@ -521,12 +521,12 @@ def build_metric_excel(per_key_df, summary, narrative):
                 ["Karşılaştırma değeri", summary["metric_col"]],
                 ["Nasıl karşılaştırıldı", measure_label],
                 ["Baz dosya", summary["baseline"]],
-                ["ID sayısı", summary["num_keys"]],
+                ["Anahtar sayısı", summary["num_keys"]],
             ],
             columns=["Açıklama", "Değer"],
         )
         info.to_excel(writer, sheet_name="Ozet", index=False)
-        per_key_df.to_excel(writer, sheet_name="ID Bazli", index=False)
+        per_key_df.to_excel(writer, sheet_name="Anahtar Bazli", index=False)
         pd.DataFrame({"Analiz": narrative.splitlines()}).to_excel(
             writer, sheet_name="Analiz", index=False
         )
@@ -692,7 +692,7 @@ if mode.startswith("Metrik"):
             "Karşılaştırma değeri (örn. toplam gelir, adet, ciro)",
             numeric_common,
             help=(
-                "Her ID için ilk dosyadaki bu değer ile diğer dosyalardaki "
+                "Her anahtar için ilk dosyadaki bu değer ile diğer dosyalardaki "
                 "karşılığı birebir kıyaslanır."
             ),
         )
@@ -768,14 +768,14 @@ if result["mode"] == "metric":
             for n, c in m_summary["duplicate_warnings"].items()
         ]
         st.warning(
-            "⚠️ Bazı dosyalarda aynı ID birden fazla satırda geçiyor. "
+            "⚠️ Bazı dosyalarda aynı anahtar birden fazla satırda geçiyor. "
             "Karşılaştırma **ilk değer** üzerinden yapıldı:\n" + "\n".join(warn_lines)
         )
 
-    st.subheader("Dosya toplamları")
+    st.subheader("Dosya toplamları (bilgi amaçlı)")
     st.caption(
         f"Baz dosya: **{baseline}** — karşılaştırma değeri: **{metric}**. "
-        "Karşılaştırma ID bazlıdır; aşağıdaki toplamlar yalnızca genel büyüklük göstergesidir. Bu alan genel bilgi amaçlıdır."
+        "Karşılaştırma Anahtar bazlıdır; aşağıdaki toplamlar yalnızca genel büyüklük göstergesidir."
     )
 
     cols = st.columns(len(m_summary["file_names"]))
@@ -810,7 +810,10 @@ if result["mode"] == "metric":
         with st.expander("Statik özet"):
             st.markdown(narrative)
     else:
-        st.caption(" ")
+        st.caption(
+            "LLM yapılandırması yok — statik analiz gösteriliyor. "
+            "LLM_API_KEY ve LLM_MODEL doldurulduğunda LLM yorumu otomatik aktif olur."
+        )
         st.markdown(narrative)
 
     st.subheader("Excel indir")
@@ -838,9 +841,9 @@ else:
     st.markdown(
         f"""
         <div style="margin-top: 12px;">
-        <span style="background-color:#{DIFF_COLOR};padding:4px 10px;border-radius:4px;margin-right:8px;">🟡 Farklılık</span>
-        <span style="background-color:#{MISSING_COLOR};padding:4px 10px;border-radius:4px;margin-right:8px;">🔴 Eksik</span>
-        <span style="background-color:#{SAME_COLOR};padding:4px 10px;border-radius:4px;">🟢 Aynı</span>
+        <span style="background-color:#{DIFF_COLOR};color:#111;padding:4px 10px;border-radius:4px;margin-right:8px;">🟡 Farklılık</span>
+        <span style="background-color:#{MISSING_COLOR};color:#111;padding:4px 10px;border-radius:4px;margin-right:8px;">🔴 Eksik</span>
+        <span style="background-color:#{SAME_COLOR};color:#111;padding:4px 10px;border-radius:4px;">🟢 Aynı</span>
         </div>
         """,
         unsafe_allow_html=True,
