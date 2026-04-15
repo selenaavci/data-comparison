@@ -772,10 +772,10 @@ if result["mode"] == "metric":
             "Karşılaştırma **ilk değer** üzerinden yapıldı:\n" + "\n".join(warn_lines)
         )
 
-    st.subheader("Dosya toplamları (bilgi amaçlı)")
+    st.subheader("Dosya toplamları")
     st.caption(
         f"Baz dosya: **{baseline}** — karşılaştırma değeri: **{metric}**. "
-        "Karşılaştırma ID bazlıdır; aşağıdaki toplamlar yalnızca genel büyüklük göstergesidir."
+        "Karşılaştırma ID bazlıdır; aşağıdaki toplamlar yalnızca genel büyüklük göstergesidir. Bu alan genel bilgi amaçlıdır."
     )
 
     cols = st.columns(len(m_summary["file_names"]))
@@ -788,9 +788,9 @@ if result["mode"] == "metric":
             delta_pct = ((t - base_total) / base_total * 100.0) if base_total else 0.0
             c.metric(name, f"{t:,.2f}", f"{delta_pct:+.2f}%")
 
-    st.subheader(f"ID bazlı ({m_summary['key_col']}) karşılaştırma")
+    st.subheader(f"Anahtar bazlı ({m_summary['key_col']}) karşılaştırma")
     st.caption(
-        "Her ID için **baz dosyadaki değer** ile **diğer dosyalardaki değeri** birebir kıyaslanır. "
+        "Her anahtar için **baz dosyadaki değer** ile **diğer dosyalardaki değeri** birebir kıyaslanır. "
         "Yeşil = artış, kırmızı = azalış."
     )
     st.dataframe(
