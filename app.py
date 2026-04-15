@@ -11,6 +11,24 @@ except ImportError:
     HAS_OPENPYXL = False
 
 
+# ---------------------------------------------------------------------------
+# LLM configuration (placeholders)
+# Eğer LLM anahtarı ve modeli aşağıya girilirse, metrik modundaki değişim
+# sebeplerini LLM yorumlar. Boş bırakıldığında statik analiz gösterilir.
+# ---------------------------------------------------------------------------
+LLM_API_KEY = ""          # örn: "sk-..." (OpenAI / Anthropic / vb.)
+LLM_MODEL = ""            # örn: "gpt-4o-mini", "claude-sonnet-4-6"
+LLM_BASE_URL = ""         # opsiyonel özel endpoint
+
+
+def llm_is_configured() -> bool:
+    return bool(LLM_API_KEY.strip()) and bool(LLM_MODEL.strip())
+
+
+def llm_explain_changes(prompt: str) -> str:
+    return ()
+
+
 st.set_page_config(
     page_title="Data Comparison Agent",
     page_icon="📊",
@@ -23,6 +41,8 @@ DIFF_COLOR = "FFEB9C"
 MISSING_COLOR = "FFC7CE"
 SAME_COLOR = "C6EFCE"
 HEADER_COLOR = "4472C4"
+UP_COLOR = "C6EFCE"
+DOWN_COLOR = "FFC7CE"
 
 
 if "file_slots" not in st.session_state:
@@ -177,6 +197,134 @@ def build_wide_comparison(dfs_with_names, key_col):
     return values_df, status_df, summary
 
 
+def build_metric_comparison(dfs_with_names, key_col, metric_col, agg="sum"):
+    """Her dosya için key_col bazında metric_col'u toplar/ortalar, dosyalar
+    arası değişimi yüzde cinsinden verir."""
+    file_names = [name for name, _ in dfs_with_names]
+
+    per_file_series = {}
+    for name, df in dfs_with_names:
+        if key_col not in df.columns or metric_col not in df.columns:
+            per_file_series[name] = pd.Series(dtype=float)
+            continue
+        d = df[[key_col, metric_col]].copy()
+        d[key_col] = d[key_col].astype(str)
+        d[metric_col] = pd.to_numeric(d[metric_col], errors="coerce")
+        grouped = d.groupby(key_col)[metric_col]
+        s = grouped.sum() if agg == "sum" else grouped.mean()
+        per_file_series[name] = s
+
+    all_keys = sorted(set().union(*[s.index for s in per_file_series.values()]))
+
+    rows = []
+    for k in all_keys:
+        row = {key_col: k}
+        for name in file_names:
+            s = per_file_series[name]
+            row[name] = float(s[k]) if k in s.index else None
+        rows.append(row)
+    per_key_df = pd.DataFrame(rows)
+
+    baseline = file_names[0]
+    for name in file_names[1:]:
+        delta_col = f"Δ {name} vs {baseline}"
+        pct_col = f"% {name} vs {baseline}"
+
+        def _delta(r, n=name):
+            a, b = r[baseline], r[n]
+            if a is None or b is None:
+                return None
+            return b - a
+
+        def _pct(r, n=name):
+            a, b = r[baseline], r[n]
+            if a is None or b is None or a == 0:
+                return None
+            return (b - a) / a * 100.0
+
+        per_key_df[delta_col] = per_key_df.apply(_delta, axis=1)
+        per_key_df[pct_col] = per_key_df.apply(_pct, axis=1)
+
+    totals = {}
+    for name in file_names:
+        s = per_file_series[name]
+        totals[name] = float(s.sum()) if not s.empty else 0.0
+
+    totals_comparison = []
+    base_total = totals[baseline]
+    for name in file_names:
+        t = totals[name]
+        delta = t - base_total
+        pct = ((t - base_total) / base_total * 100.0) if base_total else None
+        totals_comparison.append({
+            "Dosya": name,
+            f"Toplam {metric_col}": t,
+            f"Δ vs {baseline}": delta,
+            f"% vs {baseline}": pct,
+        })
+    totals_df = pd.DataFrame(totals_comparison)
+
+    summary = {
+        "key_col": key_col,
+        "metric_col": metric_col,
+        "agg": agg,
+        "baseline": baseline,
+        "file_names": file_names,
+        "totals": totals,
+        "num_keys": len(all_keys),
+    }
+    return per_key_df, totals_df, summary
+
+
+def static_change_analysis(per_key_df, summary, top_n=5):
+    """Statik analiz: toplam değişim, en çok artan/azalan anahtarlar."""
+    file_names = summary["file_names"]
+    baseline = summary["baseline"]
+    metric = summary["metric_col"]
+    key_col = summary["key_col"]
+    totals = summary["totals"]
+
+    lines = []
+    base_total = totals[baseline]
+    lines.append(f"**Baz dosya:** `{baseline}` — toplam {metric}: {base_total:,.2f}")
+
+    for name in file_names[1:]:
+        t = totals[name]
+        diff = t - base_total
+        pct = (diff / base_total * 100.0) if base_total else float("nan")
+        yön = "arttı 📈" if diff > 0 else ("azaldı 📉" if diff < 0 else "değişmedi ➖")
+        lines.append(
+            f"- `{name}`: toplam {metric} = {t:,.2f} "
+            f"→ baza göre {diff:+,.2f} ({pct:+.2f}%) — {yön}"
+        )
+
+    lines.append("")
+    lines.append("**Anahtar bazlı öne çıkanlar:**")
+    for name in file_names[1:]:
+        pct_col = f"% {name} vs {baseline}"
+        if pct_col not in per_key_df.columns:
+            continue
+        sub = per_key_df[[key_col, baseline, name, pct_col]].dropna(subset=[pct_col])
+        if sub.empty:
+            continue
+        top_up = sub.nlargest(top_n, pct_col)
+        top_down = sub.nsmallest(top_n, pct_col)
+        lines.append(f"\n*{name}* — en çok artan {min(top_n, len(top_up))}:")
+        for _, r in top_up.iterrows():
+            lines.append(
+                f"  - {key_col}={r[key_col]}: {r[baseline]:,.2f} → {r[name]:,.2f} "
+                f"({r[pct_col]:+.2f}%)"
+            )
+        lines.append(f"\n*{name}* — en çok azalan {min(top_n, len(top_down))}:")
+        for _, r in top_down.iterrows():
+            lines.append(
+                f"  - {key_col}={r[key_col]}: {r[baseline]:,.2f} → {r[name]:,.2f} "
+                f"({r[pct_col]:+.2f}%)"
+            )
+
+    return "\n".join(lines)
+
+
 def style_wide(values_df, status_df):
     v = values_df.reset_index(drop=True)
     s = status_df.reset_index(drop=True)
@@ -197,6 +345,29 @@ def style_wide(values_df, status_df):
         return styles
 
     return v.style.apply(apply_styles, axis=None)
+
+
+def style_metric_table(per_key_df):
+    def color_pct(val):
+        if pd.isna(val):
+            return ""
+        if val > 0:
+            return f"background-color: #{UP_COLOR}"
+        if val < 0:
+            return f"background-color: #{DOWN_COLOR}"
+        return ""
+
+    pct_cols = [c for c in per_key_df.columns if c.startswith("% ")]
+    styler = per_key_df.style
+    if pct_cols:
+        styler = styler.applymap(color_pct, subset=pct_cols)
+    fmt = {}
+    for c in per_key_df.columns:
+        if per_key_df[c].dtype.kind in "fi":
+            fmt[c] = "{:,.2f}"
+    if fmt:
+        styler = styler.format(fmt, na_rep="—")
+    return styler
 
 
 def style_column_matrix(col_matrix_df):
@@ -327,6 +498,29 @@ def build_excel(dfs_with_names, col_matrix_df, values_df, status_df, summary):
     return output.getvalue()
 
 
+def build_metric_excel(per_key_df, totals_df, summary, narrative):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        info = pd.DataFrame(
+            [
+                ["Eşleştirme kolonu", summary["key_col"]],
+                ["Karşılaştırma kolonu (metrik)", summary["metric_col"]],
+                ["Agregasyon", summary["agg"]],
+                ["Baz dosya", summary["baseline"]],
+                ["Anahtar sayısı", summary["num_keys"]],
+            ],
+            columns=["Açıklama", "Değer"],
+        )
+        info.to_excel(writer, sheet_name="Ozet", index=False)
+        totals_df.to_excel(writer, sheet_name="Toplam Karsilastirma", index=False)
+        per_key_df.to_excel(writer, sheet_name="Anahtar Bazli", index=False)
+        pd.DataFrame({"Analiz": narrative.splitlines()}).to_excel(
+            writer, sheet_name="Analiz", index=False
+        )
+    output.seek(0)
+    return output.getvalue()
+
+
 st.title("Data Comparison Agent")
 
 st.markdown(
@@ -341,14 +535,11 @@ with st.expander("Nasıl kullanılır?", expanded=False):
         """
         1. Karşılaştırmak istediğiniz dosyaları yükleyin (Excel, CSV veya XML formatında).
         2. İsterseniz alttaki **➕ Karşılaştırmaya bir dosya daha ekle** butonuyla en fazla 4 dosyaya kadar ekleyebilirsiniz.
-        3. Satırların hangi kolona göre eşleştirileceğini seçin. Bu kolon, her satırı benzersiz şekilde tanımlayan bir alan olmalıdır (örneğin *müşteri numarası*, *sipariş no*, *ürün kodu* gibi).
+        3. **Karşılaştırma modu** seçin:
+            - **Metrik karşılaştırma (varsayılan):** Ortak bir eşleştirme kolonu (örn. *şube no*) ve değişimini izlemek istediğiniz bir metrik (örn. *toplam gelir*) seçin. Yüzdesel değişim ve değişim sebepleri gösterilir.
+            - **Birebir (identical) karşılaştırma:** Satırlar tüm kolon değerleriyle birebir karşılaştırılır.
         4. **Karşılaştırmayı başlat** butonuna basın.
-        5. Sonuçları ekranda görebilir veya renk kodlu Excel dosyası olarak indirebilirsiniz.
-
-        **Renklerin anlamı**
-        - 🟡 **Sarı:** Aynı satırın değeri dosyalar arasında farklı
-        - 🔴 **Kırmızı:** Değer bazı dosyalarda bulunmuyor
-        - 🟢 **Yeşil:** Tüm dosyalarda aynı
+        5. Sonuçları ekranda görebilir veya Excel dosyası olarak indirebilirsiniz.
         """
     )
 
@@ -400,7 +591,7 @@ for file in uploaded_files:
         dfs_with_names.append((unique_name, df))
 
 if len(dfs_with_names) < 2:
-    st.info("Karşılaştırma için en az 2 dosya yüklemeniz gerekir.")
+    st.info("💡 Karşılaştırma için en az 2 dosya yüklemeniz gerekir.")
     st.stop()
 
 st.success(f"✅ {len(dfs_with_names)} dosya başarıyla yüklendi.")
@@ -420,11 +611,20 @@ for tab, (name, df) in zip(preview_tabs, dfs_with_names):
 
 st.divider()
 
-st.header("3. Satırları hangi kolona göre eşleştirelim?")
-st.markdown(
-    "Sistemin doğru çalışabilmesi için **her satırı benzersiz şekilde tanımlayan** "
-    "bir kolon seçmeniz gerekiyor. Örneğin: *müşteri numarası*, *sipariş no*, "
-    "*ürün kodu* veya *id* gibi bir alan."
+st.header("3. Karşılaştırma modu ve kolonlar")
+
+mode = st.radio(
+    "Karşılaştırma modu",
+    [
+        "Metrik karşılaştırma (yüzdesel değişim)",
+        "Birebir (identical) karşılaştırma",
+    ],
+    horizontal=False,
+    help=(
+        "Metrik mod: ortak bir eşleştirme kolonu (örn. şube no) üzerinden "
+        "seçtiğiniz bir metriğin (örn. toplam gelir) dosyalar arası değişimini gösterir. "
+        "Birebir mod: tüm kolonlardaki değerleri birebir karşılaştırır."
+    ),
 )
 
 common_columns = set(dfs_with_names[0][1].columns)
@@ -434,9 +634,8 @@ common_columns = sorted(common_columns)
 
 if not common_columns:
     st.error(
-        "Yüklediğiniz dosyalarda **ortak bir kolon bulunamadı**. "
-        "Satırları eşleştirebilmek için tüm dosyalarda en az bir ortak kolon olması gerekir. "
-        "Aşağıda dosyalardaki tüm kolonların listesini görebilirsiniz:"
+        "❌ Yüklediğiniz dosyalarda **ortak bir kolon bulunamadı**. "
+        "Satırları eşleştirebilmek için tüm dosyalarda en az bir ortak kolon olması gerekir."
     )
     col_matrix_df = build_column_matrix(dfs_with_names)
     st.dataframe(
@@ -447,127 +646,241 @@ if not common_columns:
     st.stop()
 
 key_col = st.selectbox(
-    "Eşleştirme kolonu",
+    "Eşleştirme kolonu (örn. şube no, müşteri no, sipariş no)",
     common_columns,
-    help="Bu listede tüm dosyalarda ortak olan kolonlar görünür.",
+    help="Satırları bu kolona göre eşleştireceğiz.",
 )
 
+metric_col = None
+agg = "sum"
+if mode.startswith("Metrik"):
+    numeric_common = []
+    for c in common_columns:
+        if c == key_col:
+            continue
+        is_num = all(
+            pd.api.types.is_numeric_dtype(df[c])
+            or pd.to_numeric(df[c], errors="coerce").notna().any()
+            for _, df in dfs_with_names
+        )
+        if is_num:
+            numeric_common.append(c)
+
+    if not numeric_common:
+        st.error(
+            "❌ Metrik karşılaştırma için tüm dosyalarda ortak, sayısal bir kolon bulunamadı. "
+            "Birebir modu deneyebilir veya dosyalarınızı kontrol edebilirsiniz."
+        )
+        st.stop()
+
+    mc1, mc2 = st.columns(2)
+    with mc1:
+        metric_col = st.selectbox(
+            "Karşılaştırma metriği (örn. toplam gelir, adet, ciro)",
+            numeric_common,
+            help="Dosyalar arası değişimi bu metrik üzerinden hesaplayacağız.",
+        )
+    with mc2:
+        agg_label = st.selectbox(
+            "Agregasyon",
+            ["Toplam (sum)", "Ortalama (mean)"],
+            help="Aynı anahtar için birden fazla satır varsa nasıl birleştirelim?",
+        )
+        agg = "sum" if agg_label.startswith("Toplam") else "mean"
+
 start = st.button(
-    "Karşılaştırmayı başlat",
+    "🔍 Karşılaştırmayı başlat",
     type="primary",
     use_container_width=True,
 )
 
 if start:
     with st.spinner("Dosyalarınız karşılaştırılıyor, lütfen bekleyin..."):
-        col_matrix_df = build_column_matrix(dfs_with_names)
-        values_df, status_df, summary = build_wide_comparison(dfs_with_names, key_col)
-        st.session_state.comparison_result = {
-            "col_matrix_df": col_matrix_df,
-            "values_df": values_df,
-            "status_df": status_df,
-            "summary": summary,
-        }
+        if mode.startswith("Metrik"):
+            per_key_df, totals_df, m_summary = build_metric_comparison(
+                dfs_with_names, key_col, metric_col, agg=agg
+            )
+            narrative = static_change_analysis(per_key_df, m_summary)
+            st.session_state.comparison_result = {
+                "mode": "metric",
+                "per_key_df": per_key_df,
+                "totals_df": totals_df,
+                "summary": m_summary,
+                "narrative": narrative,
+            }
+        else:
+            col_matrix_df = build_column_matrix(dfs_with_names)
+            values_df, status_df, summary = build_wide_comparison(dfs_with_names, key_col)
+            st.session_state.comparison_result = {
+                "mode": "identical",
+                "col_matrix_df": col_matrix_df,
+                "values_df": values_df,
+                "status_df": status_df,
+                "summary": summary,
+            }
 
 if "comparison_result" not in st.session_state:
     st.stop()
 
-col_matrix_df = st.session_state.comparison_result["col_matrix_df"]
-values_df = st.session_state.comparison_result["values_df"]
-status_df = st.session_state.comparison_result["status_df"]
-summary = st.session_state.comparison_result["summary"]
+result = st.session_state.comparison_result
 
 st.divider()
 st.header("4. Sonuçlar")
 
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Toplam satır", summary["total_keys"])
-m2.metric("Tamamen aynı", summary["identical"])
-m3.metric("Farklılık içeren", summary["with_diff"])
-m4.metric("Bazı dosyalarda yok", summary["missing"])
+if result["mode"] == "metric":
+    per_key_df = result["per_key_df"]
+    totals_df = result["totals_df"]
+    m_summary = result["summary"]
+    narrative = result["narrative"]
 
-st.markdown(
-    f"""
-    <div style="margin-top: 12px;">
-    <span style="background-color:#{DIFF_COLOR};padding:4px 10px;border-radius:4px;margin-right:8px;">🟡 Farklılık</span>
-    <span style="background-color:#{MISSING_COLOR};padding:4px 10px;border-radius:4px;margin-right:8px;">🔴 Eksik</span>
-    <span style="background-color:#{SAME_COLOR};padding:4px 10px;border-radius:4px;">🟢 Aynı</span>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+    baseline = m_summary["baseline"]
+    metric = m_summary["metric_col"]
 
-tab_rows, tab_cols, tab_excel = st.tabs(
-    ["Tüm Satırlar (Yan Yana)", "Kolon Karşılaştırması", "Excel İndir"]
-)
+    st.subheader("Toplam metrik karşılaştırması")
+    st.caption(f"Baz dosya: **{baseline}** — metrik: **{metric}** ({m_summary['agg']})")
 
-with tab_rows:
-    st.markdown(
-        "Aşağıda yüklediğiniz **tüm satırlar** gösteriliyor. Her satır için, "
-        "aynı anahtarın **farklı dosyalardaki karşılıkları yan yana** listelenmiştir. "
-        "Farklı olan değerler **sarı**, bazı dosyalarda bulunmayan değerler **kırmızı** ile işaretlenmiştir."
-    )
-    filter_choice = st.radio(
-        "Filtrele:",
-        [
-            "Tümünü göster",
-            "Sadece farklılık içerenler",
-            "Sadece bazı dosyalarda olmayanlar",
-            "Sadece tamamen aynı olanlar",
-        ],
-        horizontal=True,
-    )
-    mask = pd.Series(True, index=values_df.index)
-    if filter_choice == "Sadece farklılık içerenler":
-        mask = values_df["Durum"] == "Farklılık var"
-    elif filter_choice == "Sadece bazı dosyalarda olmayanlar":
-        mask = values_df["Durum"] == "Bazı dosyalarda yok"
-    elif filter_choice == "Sadece tamamen aynı olanlar":
-        mask = values_df["Durum"] == "Tamamen aynı"
+    cols = st.columns(len(m_summary["file_names"]))
+    base_total = m_summary["totals"][baseline]
+    for c, name in zip(cols, m_summary["file_names"]):
+        t = m_summary["totals"][name]
+        if name == baseline:
+            c.metric(name, f"{t:,.2f}")
+        else:
+            delta_pct = ((t - base_total) / base_total * 100.0) if base_total else 0.0
+            c.metric(name, f"{t:,.2f}", f"{delta_pct:+.2f}%")
 
-    display_values = values_df[mask].reset_index(drop=True)
-    display_status = status_df[mask].reset_index(drop=True)
-
-    if display_values.empty:
-        st.info("Bu filtreye uyan satır bulunamadı.")
-    else:
-        st.dataframe(
-            style_wide(display_values, display_status),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-with tab_cols:
-    st.markdown(
-        "Her kolonun hangi dosyalarda bulunduğunu aşağıdan görebilirsiniz. "
-        "**✓ Var** = kolon o dosyada mevcut, **✗ Yok** = kolon o dosyada bulunmuyor."
-    )
+    fmt = {c: "{:,.2f}" for c in totals_df.columns if totals_df[c].dtype.kind in "fi"}
     st.dataframe(
-        style_column_matrix(col_matrix_df),
+        totals_df.style.format(fmt, na_rep="—"),
         use_container_width=True,
         hide_index=True,
     )
 
-with tab_excel:
-    st.markdown(
-        "Karşılaştırma sonucunu **renk kodlu bir Excel dosyası** olarak indirebilirsiniz. "
-        "İndirdiğiniz dosyada farklılıklar **sarı**, eksik değerler **kırmızı**, "
-        "aynı olanlar **yeşil** ile işaretlenmiştir."
+    st.subheader(f"Anahtar bazlı ({m_summary['key_col']}) karşılaştırma")
+    st.caption(
+        "Her anahtar için baz dosyaya göre mutlak ve yüzdesel değişimi görebilirsiniz. "
+        "Yeşil = artış, kırmızı = azalış."
     )
-    st.markdown(
-        "**Excel dosyasında 4 sayfa bulunacak:**\n"
-        "- **Özet:** Genel bir özet ve renk açıklamaları\n"
-        "- **Kolon Karşılaştırması:** Hangi kolonun hangi dosyada olduğu\n"
-        "- **Tüm Satırlar:** Tüm satırlar, yan yana tüm dosyalardaki değerler\n"
-        "- **Sadece Farklılıklar:** Yalnızca farklılık veya eksik içeren satırlar"
+    st.dataframe(
+        style_metric_table(per_key_df),
+        use_container_width=True,
+        hide_index=True,
     )
-    excel_bytes = build_excel(
-        dfs_with_names, col_matrix_df, values_df, status_df, summary
-    )
+
+    st.subheader("Değişim analizi")
+    if llm_is_configured():
+        st.caption("💡 LLM destekli yorum")
+        prompt = (
+            "Aşağıdaki metrik karşılaştırma sonuçlarını iş perspektifinden yorumla, "
+            "olası sebepleri listele ve aksiyon öner:\n\n" + narrative
+        )
+        st.markdown(llm_explain_changes(prompt))
+        with st.expander("Statik özet"):
+            st.markdown(narrative)
+    else:
+        st.caption(
+            "LLM yapılandırması yok — statik analiz gösteriliyor. "
+            "LLM_API_KEY ve LLM_MODEL doldurulduğunda LLM yorumu otomatik aktif olur."
+        )
+        st.markdown(narrative)
+
+    st.subheader("Excel indir")
+    excel_bytes = build_metric_excel(per_key_df, totals_df, m_summary, narrative)
     st.download_button(
-        "📥 Excel dosyasını indir",
+        "📥 Metrik karşılaştırma Excel'i",
         data=excel_bytes,
-        file_name="karsilastirma_sonucu.xlsx",
+        file_name="metrik_karsilastirma.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
+
+else:
+    col_matrix_df = result["col_matrix_df"]
+    values_df = result["values_df"]
+    status_df = result["status_df"]
+    summary = result["summary"]
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Toplam satır", summary["total_keys"])
+    m2.metric("Tamamen aynı", summary["identical"])
+    m3.metric("Farklılık içeren", summary["with_diff"])
+    m4.metric("Bazı dosyalarda yok", summary["missing"])
+
+    st.markdown(
+        f"""
+        <div style="margin-top: 12px;">
+        <span style="background-color:#{DIFF_COLOR};padding:4px 10px;border-radius:4px;margin-right:8px;">🟡 Farklılık</span>
+        <span style="background-color:#{MISSING_COLOR};padding:4px 10px;border-radius:4px;margin-right:8px;">🔴 Eksik</span>
+        <span style="background-color:#{SAME_COLOR};padding:4px 10px;border-radius:4px;">🟢 Aynı</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    tab_rows, tab_cols, tab_excel = st.tabs(
+        ["Tüm Satırlar (Yan Yana)", "Kolon Karşılaştırması", "Excel İndir"]
+    )
+
+    with tab_rows:
+        st.markdown(
+            "Aşağıda yüklediğiniz **tüm satırlar** gösteriliyor. Her satır için, "
+            "aynı anahtarın **farklı dosyalardaki karşılıkları yan yana** listelenmiştir. "
+            "Farklı olan değerler **sarı**, bazı dosyalarda bulunmayan değerler **kırmızı** ile işaretlenmiştir."
+        )
+        filter_choice = st.radio(
+            "Filtrele:",
+            [
+                "Tümünü göster",
+                "Sadece farklılık içerenler",
+                "Sadece bazı dosyalarda olmayanlar",
+                "Sadece tamamen aynı olanlar",
+            ],
+            horizontal=True,
+        )
+        mask = pd.Series(True, index=values_df.index)
+        if filter_choice == "Sadece farklılık içerenler":
+            mask = values_df["Durum"] == "Farklılık var"
+        elif filter_choice == "Sadece bazı dosyalarda olmayanlar":
+            mask = values_df["Durum"] == "Bazı dosyalarda yok"
+        elif filter_choice == "Sadece tamamen aynı olanlar":
+            mask = values_df["Durum"] == "Tamamen aynı"
+
+        display_values = values_df[mask].reset_index(drop=True)
+        display_status = status_df[mask].reset_index(drop=True)
+
+        if display_values.empty:
+            st.info("Bu filtreye uyan satır bulunamadı.")
+        else:
+            st.dataframe(
+                style_wide(display_values, display_status),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    with tab_cols:
+        st.markdown(
+            "Her kolonun hangi dosyalarda bulunduğunu aşağıdan görebilirsiniz. "
+            "**✓ Var** = kolon o dosyada mevcut, **✗ Yok** = kolon o dosyada bulunmuyor."
+        )
+        st.dataframe(
+            style_column_matrix(col_matrix_df),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    with tab_excel:
+        st.markdown(
+            "Karşılaştırma sonucunu **renk kodlu bir Excel dosyası** olarak indirebilirsiniz. "
+            "İndirdiğiniz dosyada farklılıklar **sarı**, eksik değerler **kırmızı**, "
+            "aynı olanlar **yeşil** ile işaretlenmiştir."
+        )
+        excel_bytes = build_excel(
+            dfs_with_names, col_matrix_df, values_df, status_df, summary
+        )
+        st.download_button(
+            "📥 Excel dosyasını indir",
+            data=excel_bytes,
+            file_name="karsilastirma_sonucu.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
