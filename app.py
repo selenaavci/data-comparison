@@ -11,14 +11,10 @@ except ImportError:
     HAS_OPENPYXL = False
 
 
-# ---------------------------------------------------------------------------
-# LLM configuration (placeholders)
-# Eğer LLM anahtarı ve modeli aşağıya girilirse, metrik modundaki değişim
-# sebeplerini LLM yorumlar. Boş bırakıldığında statik analiz gösterilir.
-# ---------------------------------------------------------------------------
-LLM_API_KEY = ""          # örn: "sk-..." (OpenAI / Anthropic / vb.)
-LLM_MODEL = ""            # örn: "gpt-4o-mini", "claude-sonnet-4-6"
-LLM_BASE_URL = ""         # opsiyonel özel endpoint
+
+LLM_API_KEY = ""         
+LLM_MODEL = ""      
+LLM_BASE_URL = ""        
 
 
 def llm_is_configured() -> bool:
@@ -277,7 +273,6 @@ def build_metric_comparison(dfs_with_names, key_col, metric_col, agg="sum"):
 
 
 def static_change_analysis(per_key_df, summary, top_n=5):
-    """Statik analiz: toplam değişim, en çok artan/azalan anahtarlar."""
     file_names = summary["file_names"]
     baseline = summary["baseline"]
     metric = summary["metric_col"]
@@ -591,7 +586,7 @@ for file in uploaded_files:
         dfs_with_names.append((unique_name, df))
 
 if len(dfs_with_names) < 2:
-    st.info("💡 Karşılaştırma için en az 2 dosya yüklemeniz gerekir.")
+    st.info("Karşılaştırma için en az 2 dosya yüklemeniz gerekir.")
     st.stop()
 
 st.success(f"✅ {len(dfs_with_names)} dosya başarıyla yüklendi.")
