@@ -810,10 +810,7 @@ if result["mode"] == "metric":
         with st.expander("Statik özet"):
             st.markdown(narrative)
     else:
-        st.caption(
-            "LLM yapılandırması yok — statik analiz gösteriliyor. "
-            "LLM_API_KEY ve LLM_MODEL doldurulduğunda LLM yorumu otomatik aktif olur."
-        )
+        st.caption()
         st.markdown(narrative)
 
     st.subheader("Excel indir")
