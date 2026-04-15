@@ -810,7 +810,7 @@ if result["mode"] == "metric":
         with st.expander("Statik özet"):
             st.markdown(narrative)
     else:
-        st.caption()
+        st.caption(" ")
         st.markdown(narrative)
 
     st.subheader("Excel indir")
