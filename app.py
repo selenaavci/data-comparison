@@ -1,3 +1,5 @@
+
+
 from io import BytesIO
 
 import pandas as pd
@@ -11,10 +13,9 @@ except ImportError:
     HAS_OPENPYXL = False
 
 
-
-LLM_API_KEY = ""         
-LLM_MODEL = ""      
-LLM_BASE_URL = ""        
+LLM_API_KEY = ""
+LLM_MODEL = ""
+LLM_BASE_URL = ""
 
 
 def llm_is_configured() -> bool:
@@ -193,12 +194,14 @@ def build_wide_comparison(dfs_with_names, key_col):
     return values_df, status_df, summary
 
 
-def build_metric_comparison(dfs_with_names, key_col, metric_col, agg="sum"):
-    """Her dosya için key_col bazında metric_col'u toplar/ortalar, dosyalar
-    arası değişimi yüzde cinsinden verir."""
+def build_metric_comparison(dfs_with_names, key_col, metric_col, measure="pct"):
+    """Her ID için ilk dosyadaki değer ile diğer dosyalardaki değeri
+    doğrudan karşılaştırır (toplam/ortalama yok). Aynı ID birden fazla
+    satırda geçiyorsa ilk satır alınır ve uyarı üretilir."""
     file_names = [name for name, _ in dfs_with_names]
 
     per_file_series = {}
+    duplicate_warnings = {}
     for name, df in dfs_with_names:
         if key_col not in df.columns or metric_col not in df.columns:
             per_file_series[name] = pd.Series(dtype=float)
@@ -206,9 +209,11 @@ def build_metric_comparison(dfs_with_names, key_col, metric_col, agg="sum"):
         d = df[[key_col, metric_col]].copy()
         d[key_col] = d[key_col].astype(str)
         d[metric_col] = pd.to_numeric(d[metric_col], errors="coerce")
-        grouped = d.groupby(key_col)[metric_col]
-        s = grouped.sum() if agg == "sum" else grouped.mean()
-        per_file_series[name] = s
+        dup_count = int(d.duplicated(subset=[key_col]).sum())
+        if dup_count > 0:
+            duplicate_warnings[name] = dup_count
+        d = d.drop_duplicates(subset=[key_col], keep="first")
+        per_file_series[name] = d.set_index(key_col)[metric_col]
 
     all_keys = sorted(set().union(*[s.index for s in per_file_series.values()]))
 
@@ -217,16 +222,20 @@ def build_metric_comparison(dfs_with_names, key_col, metric_col, agg="sum"):
         row = {key_col: k}
         for name in file_names:
             s = per_file_series[name]
-            row[name] = float(s[k]) if k in s.index else None
+            if k in s.index and pd.notna(s[k]):
+                row[name] = float(s[k])
+            else:
+                row[name] = None
         rows.append(row)
     per_key_df = pd.DataFrame(rows)
 
     baseline = file_names[0]
     for name in file_names[1:]:
-        delta_col = f"Δ {name} vs {baseline}"
-        pct_col = f"% {name} vs {baseline}"
+        diff_col = f"Fark ({name} − {baseline})"
+        pct_col = f"% değişim ({name} vs {baseline})"
+        ratio_col = f"Oran ({name} / {baseline})"
 
-        def _delta(r, n=name):
+        def _diff(r, n=name):
             a, b = r[baseline], r[n]
             if a is None or b is None:
                 return None
@@ -238,38 +247,32 @@ def build_metric_comparison(dfs_with_names, key_col, metric_col, agg="sum"):
                 return None
             return (b - a) / a * 100.0
 
-        per_key_df[delta_col] = per_key_df.apply(_delta, axis=1)
+        def _ratio(r, n=name):
+            a, b = r[baseline], r[n]
+            if a is None or b is None or a == 0:
+                return None
+            return b / a
+
+        per_key_df[diff_col] = per_key_df.apply(_diff, axis=1)
         per_key_df[pct_col] = per_key_df.apply(_pct, axis=1)
+        per_key_df[ratio_col] = per_key_df.apply(_ratio, axis=1)
 
-    totals = {}
-    for name in file_names:
-        s = per_file_series[name]
-        totals[name] = float(s.sum()) if not s.empty else 0.0
-
-    totals_comparison = []
-    base_total = totals[baseline]
-    for name in file_names:
-        t = totals[name]
-        delta = t - base_total
-        pct = ((t - base_total) / base_total * 100.0) if base_total else None
-        totals_comparison.append({
-            "Dosya": name,
-            f"Toplam {metric_col}": t,
-            f"Δ vs {baseline}": delta,
-            f"% vs {baseline}": pct,
-        })
-    totals_df = pd.DataFrame(totals_comparison)
+    totals = {
+        name: float(pd.Series(per_file_series[name]).dropna().sum())
+        for name in file_names
+    }
 
     summary = {
         "key_col": key_col,
         "metric_col": metric_col,
-        "agg": agg,
+        "measure": measure,
         "baseline": baseline,
         "file_names": file_names,
         "totals": totals,
         "num_keys": len(all_keys),
+        "duplicate_warnings": duplicate_warnings,
     }
-    return per_key_df, totals_df, summary
+    return per_key_df, summary
 
 
 def static_change_analysis(per_key_df, summary, top_n=5):
@@ -280,23 +283,31 @@ def static_change_analysis(per_key_df, summary, top_n=5):
     totals = summary["totals"]
 
     lines = []
-    base_total = totals[baseline]
-    lines.append(f"**Baz dosya:** `{baseline}` — toplam {metric}: {base_total:,.2f}")
-
+    lines.append(
+        f"**Baz dosya:** `{baseline}` — karşılaştırma değeri: `{metric}` ({key_col} bazlı)"
+    )
     for name in file_names[1:]:
-        t = totals[name]
-        diff = t - base_total
-        pct = (diff / base_total * 100.0) if base_total else float("nan")
-        yön = "arttı 📈" if diff > 0 else ("azaldı 📉" if diff < 0 else "değişmedi ➖")
+        pct_col = f"% değişim ({name} vs {baseline})"
+        if pct_col not in per_key_df.columns:
+            continue
+        sub = per_key_df[[key_col, baseline, name, pct_col]].dropna(subset=[pct_col])
+        if sub.empty:
+            lines.append(f"- `{name}`: karşılaştırılabilir ID bulunamadı.")
+            continue
+        n_up = int((sub[pct_col] > 0).sum())
+        n_down = int((sub[pct_col] < 0).sum())
+        n_flat = int((sub[pct_col] == 0).sum())
+        avg_pct = float(sub[pct_col].mean())
+        yön = "ortalamada arttı 📈" if avg_pct > 0 else ("ortalamada azaldı 📉" if avg_pct < 0 else "ortalamada değişmedi ➖")
         lines.append(
-            f"- `{name}`: toplam {metric} = {t:,.2f} "
-            f"→ baza göre {diff:+,.2f} ({pct:+.2f}%) — {yön}"
+            f"- `{name}`: {len(sub)} ID karşılaştırıldı — {n_up} artış, {n_down} azalış, "
+            f"{n_flat} değişmedi. Ortalama % değişim: {avg_pct:+.2f}% — {yön}"
         )
 
     lines.append("")
-    lines.append("**Anahtar bazlı öne çıkanlar:**")
+    lines.append("**ID bazlı öne çıkanlar:**")
     for name in file_names[1:]:
-        pct_col = f"% {name} vs {baseline}"
+        pct_col = f"% değişim ({name} vs {baseline})"
         if pct_col not in per_key_df.columns:
             continue
         sub = per_key_df[[key_col, baseline, name, pct_col]].dropna(subset=[pct_col])
@@ -352,10 +363,13 @@ def style_metric_table(per_key_df):
             return f"background-color: #{DOWN_COLOR}"
         return ""
 
-    pct_cols = [c for c in per_key_df.columns if c.startswith("% ")]
+    signed_cols = [
+        c for c in per_key_df.columns
+        if c.startswith("% değişim") or c.startswith("Fark (")
+    ]
     styler = per_key_df.style
-    if pct_cols:
-        styler = styler.applymap(color_pct, subset=pct_cols)
+    if signed_cols:
+        styler = styler.applymap(color_pct, subset=signed_cols)
     fmt = {}
     for c in per_key_df.columns:
         if per_key_df[c].dtype.kind in "fi":
@@ -493,22 +507,26 @@ def build_excel(dfs_with_names, col_matrix_df, values_df, status_df, summary):
     return output.getvalue()
 
 
-def build_metric_excel(per_key_df, totals_df, summary, narrative):
+def build_metric_excel(per_key_df, summary, narrative):
     output = BytesIO()
+    measure_label = {
+        "diff": "Mutlak fark (B − baz)",
+        "pct": "Yüzde değişim (%)",
+        "ratio": "Oran (kaç kat)",
+    }.get(summary.get("measure", "pct"), summary.get("measure", ""))
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         info = pd.DataFrame(
             [
                 ["Eşleştirme kolonu", summary["key_col"]],
-                ["Karşılaştırma kolonu (metrik)", summary["metric_col"]],
-                ["Agregasyon", summary["agg"]],
+                ["Karşılaştırma değeri", summary["metric_col"]],
+                ["Nasıl karşılaştırıldı", measure_label],
                 ["Baz dosya", summary["baseline"]],
-                ["Anahtar sayısı", summary["num_keys"]],
+                ["ID sayısı", summary["num_keys"]],
             ],
             columns=["Açıklama", "Değer"],
         )
         info.to_excel(writer, sheet_name="Ozet", index=False)
-        totals_df.to_excel(writer, sheet_name="Toplam Karsilastirma", index=False)
-        per_key_df.to_excel(writer, sheet_name="Anahtar Bazli", index=False)
+        per_key_df.to_excel(writer, sheet_name="ID Bazli", index=False)
         pd.DataFrame({"Analiz": narrative.splitlines()}).to_excel(
             writer, sheet_name="Analiz", index=False
         )
@@ -647,7 +665,7 @@ key_col = st.selectbox(
 )
 
 metric_col = None
-agg = "sum"
+measure = "pct"
 if mode.startswith("Metrik"):
     numeric_common = []
     for c in common_columns:
@@ -671,17 +689,32 @@ if mode.startswith("Metrik"):
     mc1, mc2 = st.columns(2)
     with mc1:
         metric_col = st.selectbox(
-            "Karşılaştırma metriği (örn. toplam gelir, adet, ciro)",
+            "Karşılaştırma değeri (örn. toplam gelir, adet, ciro)",
             numeric_common,
-            help="Dosyalar arası değişimi bu metrik üzerinden hesaplayacağız.",
+            help=(
+                "Her ID için ilk dosyadaki bu değer ile diğer dosyalardaki "
+                "karşılığı birebir kıyaslanır."
+            ),
         )
     with mc2:
-        agg_label = st.selectbox(
-            "Agregasyon",
-            ["Toplam (sum)", "Ortalama (mean)"],
-            help="Aynı anahtar için birden fazla satır varsa nasıl birleştirelim?",
+        measure_label = st.selectbox(
+            "Nasıl karşılaştıralım?",
+            [
+                "Yüzde değişim (% arttı/azaldı)",
+                "Mutlak fark (ne kadar arttı)",
+                "Oran (kaç kat oldu)",
+            ],
+            help=(
+                "Sonuç tablosunda tüm ölçütler gösterilir; burada seçtiğiniz, "
+                "özet ve sıralamalarda öne çıkan ölçüttür."
+            ),
         )
-        agg = "sum" if agg_label.startswith("Toplam") else "mean"
+        if measure_label.startswith("Mutlak"):
+            measure = "diff"
+        elif measure_label.startswith("Oran"):
+            measure = "ratio"
+        else:
+            measure = "pct"
 
 start = st.button(
     "🔍 Karşılaştırmayı başlat",
@@ -692,14 +725,13 @@ start = st.button(
 if start:
     with st.spinner("Dosyalarınız karşılaştırılıyor, lütfen bekleyin..."):
         if mode.startswith("Metrik"):
-            per_key_df, totals_df, m_summary = build_metric_comparison(
-                dfs_with_names, key_col, metric_col, agg=agg
+            per_key_df, m_summary = build_metric_comparison(
+                dfs_with_names, key_col, metric_col, measure=measure
             )
             narrative = static_change_analysis(per_key_df, m_summary)
             st.session_state.comparison_result = {
                 "mode": "metric",
                 "per_key_df": per_key_df,
-                "totals_df": totals_df,
                 "summary": m_summary,
                 "narrative": narrative,
             }
@@ -724,15 +756,27 @@ st.header("4. Sonuçlar")
 
 if result["mode"] == "metric":
     per_key_df = result["per_key_df"]
-    totals_df = result["totals_df"]
     m_summary = result["summary"]
     narrative = result["narrative"]
 
     baseline = m_summary["baseline"]
     metric = m_summary["metric_col"]
 
-    st.subheader("Toplam metrik karşılaştırması")
-    st.caption(f"Baz dosya: **{baseline}** — metrik: **{metric}** ({m_summary['agg']})")
+    if m_summary.get("duplicate_warnings"):
+        warn_lines = [
+            f"- `{n}`: {c} tekrarlı kayıt (ilk değeri kullandık)"
+            for n, c in m_summary["duplicate_warnings"].items()
+        ]
+        st.warning(
+            "⚠️ Bazı dosyalarda aynı ID birden fazla satırda geçiyor. "
+            "Karşılaştırma **ilk değer** üzerinden yapıldı:\n" + "\n".join(warn_lines)
+        )
+
+    st.subheader("Dosya toplamları (bilgi amaçlı)")
+    st.caption(
+        f"Baz dosya: **{baseline}** — karşılaştırma değeri: **{metric}**. "
+        "Karşılaştırma ID bazlıdır; aşağıdaki toplamlar yalnızca genel büyüklük göstergesidir."
+    )
 
     cols = st.columns(len(m_summary["file_names"]))
     base_total = m_summary["totals"][baseline]
@@ -744,16 +788,9 @@ if result["mode"] == "metric":
             delta_pct = ((t - base_total) / base_total * 100.0) if base_total else 0.0
             c.metric(name, f"{t:,.2f}", f"{delta_pct:+.2f}%")
 
-    fmt = {c: "{:,.2f}" for c in totals_df.columns if totals_df[c].dtype.kind in "fi"}
-    st.dataframe(
-        totals_df.style.format(fmt, na_rep="—"),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    st.subheader(f"Anahtar bazlı ({m_summary['key_col']}) karşılaştırma")
+    st.subheader(f"ID bazlı ({m_summary['key_col']}) karşılaştırma")
     st.caption(
-        "Her anahtar için baz dosyaya göre mutlak ve yüzdesel değişimi görebilirsiniz. "
+        "Her ID için **baz dosyadaki değer** ile **diğer dosyalardaki değeri** birebir kıyaslanır. "
         "Yeşil = artış, kırmızı = azalış."
     )
     st.dataframe(
@@ -780,7 +817,7 @@ if result["mode"] == "metric":
         st.markdown(narrative)
 
     st.subheader("Excel indir")
-    excel_bytes = build_metric_excel(per_key_df, totals_df, m_summary, narrative)
+    excel_bytes = build_metric_excel(per_key_df, m_summary, narrative)
     st.download_button(
         "📥 Metrik karşılaştırma Excel'i",
         data=excel_bytes,
